@@ -1,3 +1,6 @@
+// Работающий вариант программы для SPI1 STM32F103C8T6 и W5500 на скорости 18MГц??? у PCLK2 максимальная скорость 72MHz (для SPI1) следовательно нужен делитель 4
+// заставила работать NSS
+
 #include "stm32f10x.h"
 #include "inc/w5500.h"
 
@@ -42,50 +45,45 @@ void blink_led(uint8_t byte)
 
 int main()
 {
+    // Используемые полярность и фаза тактового сигнала; должны быть одинаковыми и для ведущего, и для ведомого устройства.
+    const uint32_t CPOL = SPI_CR1_CPOL*0;
+    const uint32_t CPHA = SPI_CR1_CPHA*1;
+
     RCC->APB2ENR |= RCC_APB2ENR_SPI1EN | RCC_APB2ENR_IOPBEN | RCC_APB2ENR_IOPCEN | RCC_APB2ENR_IOPAEN;
-
-    GPIOB->CRL &= ~(GPIO_CRL_CNF0 | GPIO_CRL_MODE0);
-    GPIOB->CRH &= ~(GPIO_CRH_CNF9 | GPIO_CRH_MODE9);
-
-    GPIOB->CRH |= 0x3<<4;
-
-    //reset
-    GPIOB->BRR = GPIO_BSRR_BS9;
-    dummy_loop(1);
-    GPIOB->BSRR = GPIO_BSRR_BS9;
-
-    GPIOB->CRL |= 0x3;
-    GPIOB->BSRR |= GPIO_BSRR_BS0;
 
     //led
     GPIOC->CRH &= ~(uint32_t)(0xf<<20);
     GPIOC->CRH |= 0x02 << 20;
 
-    // Setup PA4, PA5, PA7
-    GPIOA->CRL &= ~(uint32_t)(0xf<<16);             // clear mode for PA4   (NSS)
-    GPIOA->CRL &= ~(uint32_t)(0xf<<20);             // clear mode for PA5   (SCK)
-    GPIOA->CRL &= ~(uint32_t)(0xf<<24);             // clear mode for PA6   (MISO)
-    GPIOA->CRL &= ~(uint32_t)(0xf<<28);             // clear mode for PA7   (MOSI)
+    // PA4 (NSS), SPI1_NSS: alt. out, push-pull, high speed
+    // PA5 (SCK), SPI1_SCK: alt. out, push-pull, high speed
+    // PA6 (MISO), SPI1_MISO: input, pull up/down
+    // PA7 (MOSI), SPI1_MOSI: alt. out, push-pull, high speed
+    GPIOA->CRL = GPIOA->CRL & ~0xFFFF0000 | 0xB8BB0000;
 
-    GPIOA->CRL |= 0xB<<16;              // for PA4 set  PushPull mode, 50MHz
-    GPIOA->CRL |= 0xB<<20;              // for PA5 set
-    GPIOA->CRL |= 0x8<<24;              // for PA6 set  input with pull-up/pull-down, 50MHz     MODE=00 for __in__
-    GPIOA->CRL |= 0xB<<28;              // for PA7 set, 50MHz     MODE>00 for __out__
+    // Настраиваем подтяжку входа PA6 (SPI1_MISO) - к высокому уровню
+    // (если вход окажется не подключён, SPI будет получать все единичные биты; вообще использование подтяжки необязательно).
+    GPIOA->BSRR = GPIO_BSRR_BS6;
 
     // --- SPI1 setup ----
-    SPI1->CR1 = SPI_CR1_SPE | SPI_CR1_MSTR | SPI_CR1_BR_2;
+    SPI1->CR1 = SPI_CR1_MSTR | SPI_CR1_BR_2 | CPOL | CPHA;
+
+    // С помощью регистра CR2 настраиваем генерацию запросов на прерывание и DMA (если нужно)
+    SPI1->CR2 &= ~0xE7;           // Сбрасываем все значимые биты регистра.
+    SPI1->CR2 |= SPI_CR2_SSOE;    // NSS будет выходом.
+
+    // Включаем SPI1.
+    // Передача не начнётся, пока не запишем что-то в регистр данных, но установится состояние выходов SPI (выходы переходят из Z-состояния в состояние формирования выходного сигнала).
+    // После этого можно будет включить ведомое устройство без опасения, что оно получит некоторое количество мусорных данных в процессе включения ведущего.
+    SPI1->CR1 |= SPI_CR1_SPE;
 
     blink_led(0xf0);
     dummy_loop(6000000);
-
-    GPIOB->BRR |= GPIO_BSRR_BS0;
 
     uint8_t i1 = W5500_Write_ReadByte(0);
     uint8_t i2 = W5500_Write_ReadByte(0x2E);
     uint8_t i3 = W5500_Write_ReadByte(0x01);
     uint8_t i = W5500_Write_ReadByte(0xff);
-
-    GPIOB->BSRR |= GPIO_BSRR_BS0;
 
     blink_led(i1);
     blink_led(i2);
